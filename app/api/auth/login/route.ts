@@ -16,7 +16,7 @@ export async function POST(req: NextRequest) {
   return run(async () => {
     const { email, password } = parse(loginSchema, await readJson(req));
 
-    const user = findUserByEmail(email);
+    const user = await findUserByEmail(email);
     const ok = await bcrypt.compare(password, user?.password_hash ?? getDummyHash());
     if (!user || !ok) throw new ApiError(401, "Incorrect email or password.");
 
@@ -24,7 +24,7 @@ export async function POST(req: NextRequest) {
     const res = NextResponse.json({
       token, // for mobile / API clients; the web app uses the httpOnly cookie set below
       user: { id: user.id, email: user.email },
-      hasFavourites: getFavourites(user.id).length > 0,
+      hasFavourites: (await getFavourites(user.id)).length > 0,
     });
     setAuthCookie(res, req, USER_COOKIE, token, USER_TOKEN_TTL_SECONDS);
     return res;

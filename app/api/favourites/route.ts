@@ -7,7 +7,7 @@ import { favouritesSchema } from "@/lib/validation";
 export async function GET(req: NextRequest) {
   return run(async () => {
     const user = await requireUser(req);
-    return json({ categories: getFavourites(user.id) });
+    return json({ categories: await getFavourites(user.id) });
   });
 }
 
@@ -16,6 +16,6 @@ export async function PUT(req: NextRequest) {
   return run(async () => {
     const user = await requireUser(req);
     const { categories } = parse(favouritesSchema, await readJson(req));
-    return json({ categories: setFavourites(user.id, categories) });
+    return json({ categories: await setFavourites(user.id, categories) });
   });
 }

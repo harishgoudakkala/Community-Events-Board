@@ -10,8 +10,8 @@ export async function PUT(req: NextRequest, ctx: { params: Promise<{ id: string 
   return run(async () => {
     const user = await requireUser(req);
     const id = parseId((await ctx.params).id);
-    if (!getActiveEvent(id)) throw new ApiError(404, "This event was not found or is no longer available.");
-    addReminder(user.id, id);
+    if (!(await getActiveEvent(id))) throw new ApiError(404, "This event was not found or is no longer available.");
+    await addReminder(user.id, id);
     return json({ reminded: true });
   });
 }
@@ -20,7 +20,7 @@ export async function DELETE(req: NextRequest, ctx: { params: Promise<{ id: stri
   return run(async () => {
     const user = await requireUser(req);
     const id = parseId((await ctx.params).id);
-    removeReminder(user.id, id);
+    await removeReminder(user.id, id);
     return json({ reminded: false });
   });
 }

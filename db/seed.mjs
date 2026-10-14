@@ -1,15 +1,14 @@
 import { buildSeedEvents } from "./seed-data.mjs";
 
-/** Inserts the 15 sample events. Caller decides when (empty table, or after reset). */
-export function insertSeedEvents(db, now = new Date()) {
-  const insert = db.prepare(
-    `INSERT INTO events (title, category, city, starts_at, price, description, image_url, is_active)
-     VALUES (@title, @category, @city, @startsAt, @price, @description, @imageUrl, @isActive)`
-  );
-  const run = db.transaction((rows) => {
-    for (const row of rows) insert.run(row);
-  });
+/** Inserts picture-backed sample events into a Neon/Postgres database. */
+export async function insertSeedEvents(sql, now = new Date()) {
   const rows = buildSeedEvents(now);
-  run(rows);
+  for (const row of rows) {
+    await sql.query(
+      `INSERT INTO events (title, category, city, starts_at, price, description, image_url, is_active)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [row.title, row.category, row.city, row.startsAt, row.price, row.description, row.imageUrl, row.isActive]
+    );
+  }
   return rows.length;
 }

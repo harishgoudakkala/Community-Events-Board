@@ -11,7 +11,7 @@ export async function POST(req: NextRequest) {
   return run(async () => {
     const { email, password } = parse(signupSchema, await readJson(req));
 
-    if (findUserByEmail(email)) {
+    if (await findUserByEmail(email)) {
       throw new ApiError(409, "An account with this email already exists.", {
         email: "This email is already registered.",
       });
@@ -22,10 +22,10 @@ export async function POST(req: NextRequest) {
 
     let user;
     try {
-      user = insertUser(email, passwordHash);
+      user = await insertUser(email, passwordHash);
     } catch (err) {
       // Two signups racing for the same email: the UNIQUE constraint is the real guard.
-      if ((err as { code?: string }).code === "SQLITE_CONSTRAINT_UNIQUE") {
+      if ((err as { code?: string }).code === "23505") {
         throw new ApiError(409, "An account with this email already exists.", {
           email: "This email is already registered.",
         });

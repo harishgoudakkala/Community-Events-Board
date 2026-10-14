@@ -6,6 +6,6 @@ import { getFavourites } from "@/lib/user-data";
 export async function GET(req: NextRequest) {
   return run(async () => {
     const user = await requireUser(req);
-    return json({ user, hasFavourites: getFavourites(user.id).length > 0 });
+    return json({ user, hasFavourites: (await getFavourites(user.id)).length > 0 });
   });
 }

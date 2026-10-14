@@ -1,6 +1,5 @@
-import { getDb } from "./db";
+import { queryRows } from "./db";
 
-// What the API returns for an event.
 export interface EventDto {
   id: number;
   title: string;
@@ -11,11 +10,11 @@ export interface EventDto {
   description: string;
   imageUrl: string;
   isActive: boolean;
-  reminded: boolean; // true if the logged-in user set a reminder; always false for guests
+  reminded: boolean;
 }
 
 interface EventRow {
-  id: number;
+  id: number | string;
   title: string;
   category: string;
   city: string;
@@ -23,37 +22,35 @@ interface EventRow {
   price: number;
   description: string;
   image_url: string;
-  is_active: number;
-  reminded: number;
+  is_active: boolean;
+  reminded: boolean;
 }
 
-function toDto(r: EventRow): EventDto {
+function toDto(row: EventRow): EventDto {
   return {
-    id: r.id,
-    title: r.title,
-    category: r.category,
-    city: r.city,
-    startsAt: r.starts_at,
-    price: r.price,
-    description: r.description,
-    imageUrl: r.image_url,
-    isActive: r.is_active === 1,
-    reminded: r.reminded === 1,
+    id: Number(row.id),
+    title: row.title,
+    category: row.category,
+    city: row.city,
+    startsAt: new Date(row.starts_at).toISOString(),
+    price: Number(row.price),
+    description: row.description,
+    imageUrl: row.image_url,
+    isActive: Boolean(row.is_active),
+    reminded: Boolean(row.reminded),
   };
 }
 
-// `reminded` comes from a LEFT JOIN on the current user's reminders.
-// User id 0 never exists (AUTOINCREMENT starts at 1), so guests simply never match.
 const SELECT_EVENT = `
   SELECT e.id, e.title, e.category, e.city, e.starts_at, e.price, e.description,
          e.image_url, e.is_active,
          (r.user_id IS NOT NULL) AS reminded
   FROM events e
-  LEFT JOIN reminders r ON r.event_id = e.id AND r.user_id = ?
+  LEFT JOIN reminders r ON r.event_id = e.id AND r.user_id = $1
 `;
 
 export interface EventsQuery {
-  categories?: string[]; // match ANY of these (feed uses several, the filter uses one)
+  categories?: string[];
   city?: string;
   q?: string;
   page: number;
@@ -71,80 +68,68 @@ export interface Paginated<T> {
 
 /** Escape LIKE wildcards so a search for "50%" does not match everything. */
 function likePattern(text: string): string {
-  return `%${text.replace(/[\\%_]/g, (m) => `\\${m}`)}%`;
+  return `%${text.replace(/[\\%_]/g, (match) => `\\${match}`)}%`;
 }
 
-/**
- * Public listing: ACTIVE and UPCOMING events only, nearest date first.
- * Every filter is optional and they are all AND-ed in one WHERE clause,
- * so Music + Coimbatore + "night" returns only events matching all three.
- */
-export function queryUpcomingEvents(query: EventsQuery): Paginated<EventDto> {
-  const db = getDb();
+/** Public listing: active and upcoming events, nearest first. */
+export async function queryUpcomingEvents(query: EventsQuery): Promise<Paginated<EventDto>> {
+  const where = ["e.is_active = TRUE", "e.starts_at >= NOW()"];
+  const params: unknown[] = [query.userId ?? 0];
+  let placeholder = 2;
 
-  const where: string[] = ["e.is_active = 1", "e.starts_at >= ?"];
-  const params: unknown[] = [new Date().toISOString()];
-
-  if (query.categories && query.categories.length > 0) {
-    where.push(`e.category IN (${query.categories.map(() => "?").join(", ")})`);
+  if (query.categories?.length) {
+    const values = query.categories.map(() => `$${placeholder++}`);
+    where.push(`e.category IN (${values.join(", ")})`);
     params.push(...query.categories);
   }
   if (query.city) {
-    where.push("e.city = ?"); // column is COLLATE NOCASE, so this is case-insensitive
+    where.push(`LOWER(e.city) = LOWER($${placeholder++})`);
     params.push(query.city);
   }
   if (query.q) {
-    where.push("(e.title LIKE ? ESCAPE '\\' OR e.description LIKE ? ESCAPE '\\')");
+    where.push(`(e.title ILIKE $${placeholder} ESCAPE '\\' OR e.description ILIKE $${placeholder + 1} ESCAPE '\\')`);
     const pattern = likePattern(query.q);
     params.push(pattern, pattern);
+    placeholder += 2;
   }
 
   const whereSql = where.join(" AND ");
+  // The event SELECT reserves $1 for the reminder join. The count query has no
+  // join, so its filter parameters must start at $1 instead of $2.
+  const countWhereSql = whereSql.replace(/\$(\d+)/g, (_match, index) => `$${Number(index) - 1}`);
+  const [{ total }] = await queryRows<{ total: number | string }>(
+    `SELECT COUNT(*)::int AS total FROM events e WHERE ${countWhereSql}`,
+    params.slice(1)
+  );
+  const limit = placeholder++;
+  const offset = placeholder;
+  const rows = await queryRows<EventRow>(
+    `${SELECT_EVENT} WHERE ${whereSql} ORDER BY e.starts_at ASC, e.id ASC LIMIT $${limit} OFFSET $${offset}`,
+    [...params, query.pageSize, (query.page - 1) * query.pageSize]
+  );
 
-  const { total } = db
-    .prepare(`SELECT COUNT(*) AS total FROM events e WHERE ${whereSql}`)
-    .get(...params) as { total: number };
-
-  const rows = db
-    .prepare(`${SELECT_EVENT} WHERE ${whereSql} ORDER BY e.starts_at ASC, e.id ASC LIMIT ? OFFSET ?`)
-    .all(query.userId ?? 0, ...params, query.pageSize, (query.page - 1) * query.pageSize) as EventRow[];
-
-  return {
-    items: rows.map(toDto),
-    page: query.page,
-    pageSize: query.pageSize,
-    total,
-    totalPages: Math.max(1, Math.ceil(total / query.pageSize)),
-  };
+  const itemCount = Number(total);
+  return { items: rows.map(toDto), page: query.page, pageSize: query.pageSize, total: itemCount, totalPages: Math.max(1, Math.ceil(itemCount / query.pageSize)) };
 }
 
-/** Single event for the public page. Inactive events are treated as not found. */
-export function getActiveEvent(id: number, userId?: number | null): EventDto | null {
-  const row = getDb()
-    .prepare(`${SELECT_EVENT} WHERE e.id = ? AND e.is_active = 1`)
-    .get(userId ?? 0, id) as EventRow | undefined;
+export async function getActiveEvent(id: number, userId?: number | null): Promise<EventDto | null> {
+  const [row] = await queryRows<EventRow>(
+    `${SELECT_EVENT} WHERE e.id = $2 AND e.is_active = TRUE`,
+    [userId ?? 0, id]
+  );
   return row ? toDto(row) : null;
 }
 
-/** Cities that currently have at least one active, upcoming event (for the city filter). */
-export function listCities(): string[] {
-  const rows = getDb()
-    .prepare(
-      `SELECT DISTINCT city FROM events
-       WHERE is_active = 1 AND starts_at >= ?
-       ORDER BY city COLLATE NOCASE`
-    )
-    .all(new Date().toISOString()) as { city: string }[];
-  return rows.map((r) => r.city);
+export async function listCities(): Promise<string[]> {
+  const rows = await queryRows<{ city: string }>(
+    "SELECT DISTINCT city FROM events WHERE is_active = TRUE AND starts_at >= NOW() ORDER BY city"
+  );
+  return rows.map((row) => row.city);
 }
 
-// ---- Admin ----
-
-/** Admin sees everything (active, inactive, past), newest date first. */
-export function listAllEvents(): EventDto[] {
-  const rows = getDb()
-    .prepare(`${SELECT_EVENT} ORDER BY e.starts_at DESC, e.id DESC`)
-    .all(0) as EventRow[];
+/** Admin sees all events, including inactive and past ones. */
+export async function listAllEvents(): Promise<EventDto[]> {
+  const rows = await queryRows<EventRow>(`${SELECT_EVENT} ORDER BY e.starts_at DESC, e.id DESC`, [0]);
   return rows.map(toDto);
 }
 
@@ -158,31 +143,22 @@ export interface NewEvent {
   imageUrl: string;
 }
 
-export function createEvent(input: NewEvent): EventDto {
-  const db = getDb();
-  const info = db
-    .prepare(
-      `INSERT INTO events (title, category, city, starts_at, price, description, image_url, is_active)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 1)`
-    )
-    .run(
-      input.title,
-      input.category,
-      input.city,
-      input.startsAt,
-      input.price,
-      input.description,
-      input.imageUrl
-    );
-  const row = db.prepare(`${SELECT_EVENT} WHERE e.id = ?`).get(0, info.lastInsertRowid) as EventRow;
+export async function createEvent(input: NewEvent): Promise<EventDto> {
+  const [row] = await queryRows<EventRow>(
+    `INSERT INTO events (title, category, city, starts_at, price, description, image_url, is_active)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE)
+     RETURNING id, title, category, city, starts_at, price, description, image_url, is_active, FALSE AS reminded`,
+    [input.title, input.category, input.city, input.startsAt, input.price, input.description, input.imageUrl]
+  );
   return toDto(row);
 }
 
-/** Events are never deleted, only switched on or off. Returns null if the id does not exist. */
-export function setEventActive(id: number, isActive: boolean): EventDto | null {
-  const db = getDb();
-  const info = db.prepare("UPDATE events SET is_active = ? WHERE id = ?").run(isActive ? 1 : 0, id);
-  if (info.changes === 0) return null;
-  const row = db.prepare(`${SELECT_EVENT} WHERE e.id = ?`).get(0, id) as EventRow;
-  return toDto(row);
+/** Events are never deleted, only switched on or off. */
+export async function setEventActive(id: number, isActive: boolean): Promise<EventDto | null> {
+  const [row] = await queryRows<EventRow>(
+    `UPDATE events SET is_active = $2 WHERE id = $1
+     RETURNING id, title, category, city, starts_at, price, description, image_url, is_active, FALSE AS reminded`,
+    [id, isActive]
+  );
+  return row ? toDto(row) : null;
 }

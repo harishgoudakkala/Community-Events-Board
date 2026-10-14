@@ -10,7 +10,7 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
     await requireAdmin(req);
     const id = parseId((await ctx.params).id);
     const { isActive } = parse(setActiveSchema, await readJson(req));
-    const event = setEventActive(id, isActive);
+    const event = await setEventActive(id, isActive);
     if (!event) throw new ApiError(404, "Event not found.");
     return json({ event });
   });

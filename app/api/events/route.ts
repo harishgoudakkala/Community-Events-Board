@@ -10,7 +10,7 @@ export async function GET(req: NextRequest) {
     const params = parse(eventsQuerySchema, Object.fromEntries(req.nextUrl.searchParams));
     const user = await getUser(req);
 
-    const result = queryUpcomingEvents({
+    const result = await queryUpcomingEvents({
       categories: params.category ? [params.category] : undefined,
       city: params.city,
       q: params.q,

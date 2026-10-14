@@ -3,5 +3,5 @@ import { json, run } from "@/lib/http";
 
 // Cities that have at least one active, upcoming event. Feeds the city filter.
 export async function GET() {
-  return run(async () => json({ cities: listCities() }));
+  return run(async () => json({ cities: await listCities() }));
 }

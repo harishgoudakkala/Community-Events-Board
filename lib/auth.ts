@@ -7,7 +7,7 @@ import {
   USER_COOKIE,
   USER_TOKEN_TTL_SECONDS,
 } from "./config";
-import { getDb } from "./db";
+import { queryRows } from "./db";
 import { ApiError } from "./http";
 
 const secret = new TextEncoder().encode(JWT_SECRET);
@@ -52,10 +52,8 @@ export interface AuthUser {
 export async function getUser(req: NextRequest): Promise<AuthUser | null> {
   const sub = await verify(readToken(req, USER_COOKIE), "user");
   if (!sub) return null;
-  const row = getDb().prepare("SELECT id, email FROM users WHERE id = ?").get(Number(sub)) as
-    | AuthUser
-    | undefined;
-  return row ?? null;
+  const [row] = await queryRows<AuthUser>("SELECT id, email FROM users WHERE id = $1", [Number(sub)]);
+  return row ? { ...row, id: Number(row.id) } : null;
 }
 
 export async function requireUser(req: NextRequest): Promise<AuthUser> {
